@@ -3,13 +3,22 @@ Some example classes for people who want to create a homemade bot.
 
 With these classes, bot makers will not have to implement the UCI or XBoard interfaces themselves.
 """
-import chess
-from chess.engine import PlayResult, Limit
-import random
-from lib.engine_wrapper import MinimalEngine
-from lib.types import MOVE, HOMEMADE_ARGS_TYPE
 import logging
+import random
+from typing import Optional
 
+import chess
+from chess.engine import Limit, PlayResult
+import torch
+
+from lib import model
+from lib.config import Configuration
+from lib.engine_wrapper import MinimalEngine
+from lib.types import COMMANDS_TYPE, HOMEMADE_ARGS_TYPE, MOVE, OPTIONS_GO_EGTB_TYPE
+from looking_glass_bot.mamba_chess_model import MambaChessModel, load_from_safetensors
+from transformers import MambaConfig
+
+from looking_glass_bot.mamba_chess_utils import mamba_score_moves
 
 # Use this logger variable to print messages to the console or log files.
 # logger.info("message") will always print "message" to the console or log file.
@@ -91,3 +100,58 @@ class ComboEngine(ExampleEngine):
             possible_moves.sort(key=str)
             move = possible_moves[0]
         return PlayResult(move, None, draw_offered=draw_offered)
+
+class LookingGlassEngine(ExampleEngine):
+    
+    mamba_model: MambaChessModel | None = None
+
+    def __init__(self, commands: COMMANDS_TYPE, options: OPTIONS_GO_EGTB_TYPE, stderr: Optional[int],
+                draw_or_resign: Configuration, game: Optional[model.Game] = None, name: Optional[str] = None,
+                **popen_args: str) -> None:
+        super().__init__(commands, options, stderr, draw_or_resign, game, name, **popen_args)
+        
+        my_elo = 3000
+        opponent_elo = 1500
+        if game is not None:
+            if game.opponent.rating is not None:
+                opponent_elo = game.opponent.rating
+            elif game.opponent.is_bot:
+                opponent_elo = 3000
+            
+        if game is None or game.is_white:
+            self.player_1_elo = my_elo
+            self.player_2_elo = opponent_elo
+        else:
+            self.player_1_elo = opponent_elo
+            self.player_2_elo = my_elo
+        
+        if LookingGlassEngine.mamba_model is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            # device = 'cpu'
+            
+            configuration = MambaConfig(
+                vocab_size=85,
+                hidden_size=256,
+                num_hidden_layers=6
+            )
+            LookingGlassEngine.mamba_model = load_from_safetensors(
+                configuration,
+                "looking_glass_bot/models/model_6x256.safetensors",
+                device=device
+            )
+            LookingGlassEngine.mamba_model.device = device
+        
+    
+    def search(self, board: chess.Board, time_limit: Limit, ponder: bool, draw_offered: bool, root_moves: MOVE) -> PlayResult:
+        assert LookingGlassEngine.mamba_model is not None
+        
+        scored_moves = mamba_score_moves(board, LookingGlassEngine.mamba_model, self.player_1_elo, self.player_2_elo)
+        
+        scored_moves.sort(reverse=True, key=lambda m: m.score)
+        
+        logger.info(
+            "Top 5 moves: [%s]", 
+            ','.join([scored.move.uci()+' '+str(scored.score) for scored in scored_moves[:5] ])
+            )
+        
+        return PlayResult(scored_moves[0].move, None, draw_offered=draw_offered)
