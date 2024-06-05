@@ -1,10 +1,14 @@
-*.yml
+config.yml
+
 **/__pycache__
+env
+
 /engines/*
 !/engines/README.md
 lichess_bot_auto_logs/*
 .vscode/*
 .vs/*
+
 *.pgn
 *.log
 *.txt
